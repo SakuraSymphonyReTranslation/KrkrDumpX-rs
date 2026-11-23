@@ -8,12 +8,14 @@ repository = "https://github.com/alyappy/KrkrDumpX-rs"
 
 [dependencies]
 anyhow = "1"
+argon2 = "0.5"
 blake2 = "0.10"
 chacha20poly1305 = "0.10"
 clap = { version = "4", features = ["derive"] }
 flate2 = "1"
 hex = "0.4"
 indicatif = "0.17"
+keccak = "0.1"
 lz4_flex = "0.11"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
@@ -22,7 +24,7 @@ sha2 = "0.10"
 sha3 = "0.10"
 walkdir = "2"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(all(windows, target_arch = "x86"))'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 
 [profile.release]

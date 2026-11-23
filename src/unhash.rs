@@ -1,4 +1,5 @@
 use crate::descramble::decode_kirikiri_text;
+use crate::grammar::induce_family_candidates;
 use crate::hash::{Hxv4Hasher, is_file_hash_hex, is_path_hash_hex};
 use crate::pbd::{PbdValue, parse_pbd};
 use crate::psb::{PsbValue, parse_psb};
@@ -256,6 +257,36 @@ const SEED_FILENAMES: &[&str] = &[
     "message.tjs",
     "world.tjs",
     "system.tjs",
+    // KiriKiriZ / KAG / KAGEx / Yuzusoft engine framework scripts
+    "checkboxlayer.tjs",
+    "diffimage.tjs",
+    "diffimage2.tjs",
+    "keybinder.tjs",
+    "snapcapture.tjs",
+    "textspeedex.tjs",
+    "vcutfade.tjs",
+    "voicematch.tjs",
+    "nameframe.tjs",
+    "fonteffect.tjs",
+    "exgamepad.tjs",
+    "standlevel.tjs",
+    "nocfchkdialog.tjs",
+    "optrevundo.tjs",
+    "designmscur.tjs",
+    "append_setup_1.tjs",
+    "affinesourcebishamon.tjs",
+    "scnchart_ui_sel.tjs",
+    "scnchart_ui_smp.tjs",
+    "scnchart_ui_opt.tjs",
+    "compat.ks",
+    "gfx_motion.tjs",
+    "gfx_noise.tjs",
+    "gfx_texture.tjs",
+    "emotetalk.tjs",
+    "linebreak_a.png",
+    "pagebreak_a.png",
+    "help_aspect.png",
+    "help_env.png",
     "version.txt",
     "readme.txt",
     "default.ttf",
@@ -287,6 +318,13 @@ fn regex_storage_kv() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(r#"(?i)\b(?:storage|file|image|rule|cursor|graphic|icon|stamp)\s*(?:=>|:|=)\s*["']([^"'\r\n]+)["']"#).unwrap()
+    })
+}
+
+fn regex_ini_asset_kv() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?im)^(?:image|storage|file|graphic|bg|icon|rule|sprite)(?:\.[A-Za-z0-9_]+)?\s*=\s*([^\s#:;,"']{2,64})"#).unwrap()
     })
 }
 
@@ -601,6 +639,7 @@ impl AutoUnhasher {
         let mut charvoice_path: Option<std::path::PathBuf> = None;
         let mut sysse_path: Option<std::path::PathBuf> = None;
         let mut charvoice_sysse_done = false;
+        let mut grammar_done = false;
 
         for _ in 0..24 {
             rounds += 1;
@@ -652,7 +691,15 @@ impl AutoUnhasher {
             self.expand_missing_voices(&all_known_names);
             self.expand_numeric_images(&all_known_names);
 
-            let newly_resolved = self.flush_candidates();
+            let mut newly_resolved = self.flush_candidates();
+            if newly_resolved == 0 && !grammar_done {
+                grammar_done = true;
+                let known_now: Vec<String> = self.file_map.values().cloned().collect();
+                for cand in induce_family_candidates(&known_now, 1_500_000) {
+                    self.add_file_candidate(&cand);
+                }
+                newly_resolved = self.flush_candidates();
+            }
             if newly_resolved == 0 && !found_work {
                 break;
             }
@@ -689,6 +736,7 @@ impl AutoUnhasher {
         let mut charvoice_buf: Option<&[u8]> = None;
         let mut sysse_buf: Option<&[u8]> = None;
         let mut charvoice_sysse_done = false;
+        let mut grammar_done = false;
 
         for _ in 0..24 {
             rounds += 1;
@@ -728,14 +776,22 @@ impl AutoUnhasher {
                 }
             }
 
-            // Expand locale variants, UIPSD multi-lang variants, and missing voice sequences
+            // Expand tokens, locale/UIPSD variants, and audio/image sequences
             let all_known_names: Vec<String> = self.file_map.values().cloned().collect();
             self.expand_discovered_tokens_and_prefixes();
             self.expand_locale_and_uipsd_variants(&all_known_names);
             self.expand_missing_voices(&all_known_names);
             self.expand_numeric_images(&all_known_names);
 
-            let newly_resolved = self.flush_candidates();
+            let mut newly_resolved = self.flush_candidates();
+            if newly_resolved == 0 && !grammar_done {
+                grammar_done = true;
+                let known_now: Vec<String> = self.file_map.values().cloned().collect();
+                for cand in induce_family_candidates(&known_now, 1_500_000) {
+                    self.add_file_candidate(&cand);
+                }
+                newly_resolved = self.flush_candidates();
+            }
             if newly_resolved == 0 && !found_work {
                 break;
             }
@@ -1012,6 +1068,20 @@ impl AutoUnhasher {
             }
         }
 
+        // Unquoted INI asset assignments (`image.l1n = sakura_l1`)
+        for cap in regex_ini_asset_kv().captures_iter(text) {
+            if let Some(m) = cap.get(1) {
+                let val = m.as_str().trim();
+                if val.contains('.') {
+                    self.add_file_candidate(val);
+                } else {
+                    for ext in [".png", ".jpg", ".tlg", ".pimg", ".asd"] {
+                        self.add_file_candidate(&format!("{val}{ext}"));
+                    }
+                }
+            }
+        }
+
         // Transition preset TJS dicts (`%[ method:"blurfade", ... ]` -> `trans_blurfade.tjs`)
         if text.len() <= 4096 && text.contains("%[") {
             for cap in regex_trans_method().captures_iter(text) {
@@ -1204,6 +1274,28 @@ impl AutoUnhasher {
         }
     }
 
+    fn collect_psb_speaker_names(&mut self, val: &PsbValue) {
+        match val {
+            PsbValue::String(s) => {
+                for part in s.split(['/', '／']) {
+                    let spk = part.trim();
+                    if !spk.is_empty()
+                        && spk.chars().count() <= 20
+                        && !spk.contains([' ', '\\', '\n', '\r', '\t', '「', '」', '（', '）'])
+                    {
+                        self.known_char_names.insert(spk.to_string());
+                    }
+                }
+            }
+            PsbValue::List(list) => {
+                for item in list.iter().take(4) {
+                    self.collect_psb_speaker_names(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn extract_from_psb(&mut self, root: &PsbValue) {
         let Some(obj) = root.as_object() else {
             return;
@@ -1230,13 +1322,15 @@ impl AutoUnhasher {
                         for text in texts {
                             if let Some(items) = text.as_list() {
                                 for speaker_val in items.iter().take(2) {
-                                    if let Some(spk) = speaker_val.as_str() {
-                                        let spk = spk.trim();
-                                        if !spk.is_empty()
-                                            && spk.chars().count() <= 20
-                                            && !spk.contains([' ', '/', '\\', '\n', '\r', '\t'])
-                                        {
-                                            self.known_char_names.insert(spk.to_string());
+                                    self.collect_psb_speaker_names(speaker_val);
+                                }
+                                // Multi-lang PSB dialogue tuples: `items[2]` holds `[[display_name, text], ...]`
+                                if let Some(langs) = items.get(2).and_then(|v| v.as_list()) {
+                                    for lang_entry in langs {
+                                        if let Some(pair) = lang_entry.as_list() {
+                                            if let Some(disp) = pair.first() {
+                                                self.collect_psb_speaker_names(disp);
+                                            }
                                         }
                                     }
                                 }

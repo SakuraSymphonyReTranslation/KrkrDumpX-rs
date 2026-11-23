@@ -7,6 +7,7 @@ mod descramble;
 mod drip;
 mod exe_finder;
 mod filter;
+mod grammar;
 mod hash;
 mod hxv4;
 mod pbd;
