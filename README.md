@@ -87,7 +87,7 @@ krkrdumpx-rs hash --path "" --path "data/main/" --file "cglist.csv" --file "star
 
 This project builds on research and code from the following open-source tools:
 
-- [KrkrDump](https://github.com/MLChinoo/KrkrDump-Hasher) (original by crskycode) and [KrkrDump-Mod / KrkrDumpX](https://github.com/alyappy/KrkrDump-Mod)
+- [KrkrDump](https://github.com/crskycode/KrkrDump) (original by crskycode) and [KrkrDump-Mod / KrkrDumpX](https://github.com/alyappy/KrkrDump-Mod)
 - [cxdec-hxv4-static-analysis](https://github.com/hktkqj/cxdec-hxv4-static-analysis): static `bres`/BOOTSTRAP/Hxv4/FilterManager derivation
 - [hxv4_unhash_tools](https://github.com/MLChinoo/hxv4_unhash_tools) and [hxv4_deobf_tools](https://github.com/MLChinoo/hxv4_deobf_tools): content-driven Hxv4 filename recovery
 - [msg-tool](https://github.com/lifegpc/msg-tool): `TJS/4s0` and `TJS/ns0` PackinOne binary decoding reference
