@@ -1,6 +1,6 @@
 [package]
 name = "krkrdumpx-rs"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "Static Kirikiri XP3 / Cxdec Hxv4 key extractor, analyzer, auto-unhasher, and archive extractor"
 license = "GPL-3.0-or-later"
