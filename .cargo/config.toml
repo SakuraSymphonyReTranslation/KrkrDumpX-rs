@@ -1,0 +1,7 @@
+[build]
+# Default to 32-bit x86 Windows so bootstrap.dll (32-bit x86 PE) can be loaded
+# natively in-process without needing .NET 8 x86 or external helper binaries.
+target = "i686-pc-windows-msvc"
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/LARGEADDRESSAWARE"]
