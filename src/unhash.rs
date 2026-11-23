@@ -181,6 +181,7 @@ const SEED_FILENAMES: &[&str] = &[
     "cglist.csv",
     "charvoice.csv",
     "charinit.csv",
+    "charlist.csv",
     "chardef.csv",
     "charadef.csv",
     "char.csv",
@@ -199,11 +200,19 @@ const SEED_FILENAMES: &[&str] = &[
     "FAQbase.ini",
     "help_opt.txt",
     "yomi.txt",
+    "speech_defdic.txt",
+    "sysmenu.ks",
     "diffimage.txt",
     "imagediff.txt",
     "diffimage.csv",
     "desktop.ini",
     "thumbs.db",
+    "aboutdialog.png",
+    "brandlogo.png",
+    "clickglyph.png",
+    "clickglyph.asd",
+    "cur_normal.cur",
+    "cur_over.cur",
     "lang_jp.ini",
     "lang_en.ini",
     "lang_id.ini",
@@ -263,15 +272,32 @@ const SEED_FILENAMES: &[&str] = &[
 fn regex_tjs_file_ref() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"["']([^"'\s<>|*?]+\.(?:tjs|ks|scn|ini|csv|txt|png|jpg|jpeg|bmp|tlg|pimg|ogg|opus|wav|mchx|sli|mp4|wmv|amv|webm|psb|pbd|stand|sinfo|mtn|stage|toml|ttf|otf|asd))["']"#).unwrap()
+        Regex::new(r#"["']([^"'\s<>|*?]+\.(?:tjs|ks|scn|ini|csv|txt|png|jpg|jpeg|bmp|tlg|pimg|ogg|opus|wav|mchx|sli|mp4|wmv|amv|webm|psb|pbd|stand|sinfo|mtn|stage|toml|ttf|otf|asd|cur))["']"#).unwrap()
     })
 }
 
 fn regex_unquoted_file_ref() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"([^\s"',;:()\[\]{}<>|*?=]+\.(?:tjs|ks|scn|ini|csv|txt|png|jpg|jpeg|bmp|tlg|pimg|ogg|opus|wav|mchx|sli|mp4|wmv|amv|webm|psb|pbd|stand|sinfo|mtn|stage|toml|ttf|otf|asd))"#).unwrap()
+        Regex::new(r#"([^\s"',;:()\[\]{}<>|*?=]+\.(?:tjs|ks|scn|ini|csv|txt|png|jpg|jpeg|bmp|tlg|pimg|ogg|opus|wav|mchx|sli|mp4|wmv|amv|webm|psb|pbd|stand|sinfo|mtn|stage|toml|ttf|otf|asd|cur))"#).unwrap()
     })
+}
+
+fn regex_storage_kv() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)\b(?:storage|file|image|rule|cursor|graphic|icon|stamp)\s*(?:=>|:|=)\s*["']([^"'\r\n]+)["']"#).unwrap()
+    })
+}
+
+fn regex_trans_method() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"\bmethod\s*(?:=>|:|=)\s*["']([A-Za-z0-9_]+)["']"#).unwrap())
+}
+
+fn regex_printf_num_fmt() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"([A-Za-z0-9_]{2,32})%0?([1-4])?d"#).unwrap())
 }
 
 fn regex_quoted_dir_path() -> &'static Regex {
@@ -769,12 +795,41 @@ impl AutoUnhasher {
         // 2. TJS2100 compiled bytecode
         if data.starts_with(b"TJS2100\0") {
             if let Ok(tjs) = Tjs2Bytecode::parse(data) {
+                let mut local_prefixes: Vec<String> = Vec::new();
+                let mut local_words: Vec<String> = Vec::new();
                 for s in &tjs.strings {
                     self.harvest_string_hint(s);
                     if s.ends_with(".ks") {
                         self.add_file_candidate(&format!("{s}.scn"));
                     }
                     self.record_ident_token(s);
+                    self.expand_printf_template(s);
+                    let st = s.trim();
+                    if (2..=24).contains(&st.len())
+                        && st
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    {
+                        if st.ends_with('_') && !st.starts_with('_') && st.len() >= 3 {
+                            local_prefixes.push(st.to_ascii_lowercase());
+                        } else if !st.starts_with('_')
+                            && st.bytes().all(|b| b.is_ascii_alphanumeric())
+                        {
+                            local_words.push(st.to_ascii_lowercase());
+                        }
+                    }
+                }
+                if !local_prefixes.is_empty()
+                    && !local_words.is_empty()
+                    && local_prefixes.len().saturating_mul(local_words.len()) <= 4000
+                {
+                    for p in &local_prefixes {
+                        for w in &local_words {
+                            for ext in [".png", ".tjs", ".ks", ".ini", ".asd", ".cur"] {
+                                self.add_file_candidate(&format!("{p}{w}{ext}"));
+                            }
+                        }
+                    }
                 }
             }
             return;
@@ -819,6 +874,27 @@ impl AutoUnhasher {
         if data.len() <= 2 * 1024 * 1024 {
             if let Some(text) = decode_kirikiri_text(data) {
                 self.scan_decoded_text_round1(&text);
+            }
+        }
+    }
+
+    fn expand_printf_template(&mut self, text: &str) {
+        if !text.contains('%') {
+            return;
+        }
+        for cap in regex_printf_num_fmt().captures_iter(text) {
+            let Some(stem) = cap.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            let width = cap
+                .get(2)
+                .and_then(|m| m.as_str().parse::<usize>().ok())
+                .unwrap_or(2);
+            for n in 0..=50usize {
+                let name = format!("{stem}{n:0width$}");
+                for ext in [".png", ".jpg", ".tlg", ".opus", ".ogg"] {
+                    self.add_file_candidate(&format!("{name}{ext}"));
+                }
             }
         }
     }
@@ -909,6 +985,43 @@ impl AutoUnhasher {
                 }
             }
         }
+
+        // Generic `storage:"..."` / `file:"..."` / `cursor:"..."` refs (ASCII or Unicode stems)
+        for cap in regex_storage_kv().captures_iter(text) {
+            if let Some(m) = cap.get(1) {
+                let val = m.as_str().trim();
+                if val.is_empty()
+                    || val.chars().count() > 80
+                    || val.contains([' ', '*', '?', '$', '%', '\t'])
+                {
+                    continue;
+                }
+                if val.contains('.') {
+                    self.add_file_candidate(val);
+                    if val.to_ascii_lowercase().ends_with(".ks") {
+                        self.add_file_candidate(&format!("{val}.scn"));
+                    }
+                } else {
+                    for ext in [
+                        ".png", ".jpg", ".tlg", ".pimg", ".asd", ".cur", ".tjs", ".ks", ".ks.scn",
+                        ".opus", ".ogg", ".ini",
+                    ] {
+                        self.add_file_candidate(&format!("{val}{ext}"));
+                    }
+                }
+            }
+        }
+
+        // Transition preset TJS dicts (`%[ method:"blurfade", ... ]` -> `trans_blurfade.tjs`)
+        if text.len() <= 4096 && text.contains("%[") {
+            for cap in regex_trans_method().captures_iter(text) {
+                if let Some(m) = cap.get(1) {
+                    self.add_file_candidate(&format!("trans_{}.tjs", m.as_str()));
+                }
+            }
+        }
+
+        self.expand_printf_template(text);
 
         // Self-identifying `.sinfo` files: first non-empty line starts with `<stem>\tfacexoff\t` etc.
         if let Some(first_line) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
@@ -1116,6 +1229,17 @@ impl AutoUnhasher {
                     if let Some(texts) = scene.get("texts").and_then(|v| v.as_list()) {
                         for text in texts {
                             if let Some(items) = text.as_list() {
+                                for speaker_val in items.iter().take(2) {
+                                    if let Some(spk) = speaker_val.as_str() {
+                                        let spk = spk.trim();
+                                        if !spk.is_empty()
+                                            && spk.chars().count() <= 20
+                                            && !spk.contains([' ', '/', '\\', '\n', '\r', '\t'])
+                                        {
+                                            self.known_char_names.insert(spk.to_string());
+                                        }
+                                    }
+                                }
                                 for text_item in items {
                                     if let Some(sublist) = text_item.as_list() {
                                         for sub in sublist {
@@ -1237,6 +1361,24 @@ impl AutoUnhasher {
                                 }
                                 "voice" => {
                                     self.handle_psb_voice(s);
+                                }
+                                "stamp" => {
+                                    if s.contains('.') {
+                                        self.add_file_candidate(s);
+                                    } else {
+                                        self.add_file_candidate(&format!("{s}.png"));
+                                        self.add_file_candidate(&format!("{s}.tlg"));
+                                        self.add_file_candidate(&format!("{s}.jpg"));
+                                    }
+                                }
+                                "icon" => {
+                                    if s.contains('.') {
+                                        self.add_file_candidate(s);
+                                    } else {
+                                        self.add_file_candidate(&format!("{s}.png"));
+                                        self.add_file_candidate(&format!("chaticon_{s}.png"));
+                                        self.add_file_candidate(&format!("comuicon_{s}.png"));
+                                    }
                                 }
                                 "stand" => {
                                     if s.contains('.') {
@@ -2612,7 +2754,8 @@ impl AutoUnhasher {
                 (max_num + 40).min(1500)
             };
 
-            let expand_variants = prefix.ends_with('_') || had_suf || low_pref.contains("_sys_");
+            let expand_variants =
+                prefix.ends_with('_') || had_suf || low_pref.contains("_sys_") || low_pref.contains("bgm");
             let expand_take_suffixes = cap <= 500;
             for n in 0..=cap {
                 let base = format!("{prefix}{n:0width$}");
@@ -2629,7 +2772,7 @@ impl AutoUnhasher {
                     }
                 }
                 if expand_variants && n <= (max_num + 5).min(500) {
-                    for suf in ["a", "b", "c", "_d", "_1", "_2", "_ref", "_ref2"] {
+                    for suf in ["a", "b", "c", "_d", "_f", "_1", "_2", "_ref", "_ref2"] {
                         self.add_file_candidate(&format!("{base}{suf}.ogg"));
                         self.add_file_candidate(&format!("{base}{suf}.ogg.sli"));
                         self.add_file_candidate(&format!("{base}{suf}.opus"));
@@ -2688,10 +2831,14 @@ impl AutoUnhasher {
                 max_num.max(50).min(200)
             } else if prefix == "map" && width == 2 {
                 max_num.max(99).min(120)
+            } else if prefix == "map" && width == 3 && max_num >= 500 {
+                max_num.max(620).min(650)
             } else {
                 (max_num + 20).min(600)
             };
-            let start = if max_num > 200 {
+            let start = if prefix == "map" && width == 3 && max_num >= 500 {
+                500
+            } else if max_num > 200 {
                 max_num.saturating_sub(20)
             } else {
                 0
@@ -2715,6 +2862,11 @@ impl AutoUnhasher {
                     for ch in b'a'..=b'z' {
                         let c = ch as char;
                         self.add_file_candidate(&format!("{prefix}{num_str}{c}.{ext}"));
+                    }
+                    if prefix == "map" {
+                        for extra in ["b2", "c2", "a2"] {
+                            self.add_file_candidate(&format!("{prefix}{num_str}{extra}.{ext}"));
+                        }
                     }
                 }
             }
