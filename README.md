@@ -118,6 +118,7 @@ This project builds on research and code from the following open-source tools:
 - [cxdec-hxv4-static-analysis](https://github.com/hktkqj/cxdec-hxv4-static-analysis): static `bres`/BOOTSTRAP/Hxv4/FilterManager derivation
 - [Cxdec_Tools](https://github.com/frelixir/Cxdec_Tools): pure-Rust Argon2i/Keccak/BLAKE2s bootstrap KDF and Cxdec lane generation
 - [Hxv4-FromScratch](https://github.com/Echo-cute/Hxv4-FromScratch): grammar induction and KiriKiriZ engine script list
+- [xp3-brute](https://github.com/xmoezzz/xp3-brute): KAG/TJS/PBD reference mining and Hxv4 synthetic entry ID encoding
 - [hxv4_unhash_tools](https://github.com/MLChinoo/hxv4_unhash_tools) and [hxv4_deobf_tools](https://github.com/MLChinoo/hxv4_deobf_tools): content-driven Hxv4 filename recovery
 - [msg-tool](https://github.com/lifegpc/msg-tool): `TJS/4s0` and `TJS/ns0` PackinOne binary decoding reference
 - [FreeMote](https://github.com/UlyssesWu/FreeMote) and GARbro contributors for PSB and Kirikiri format documentation

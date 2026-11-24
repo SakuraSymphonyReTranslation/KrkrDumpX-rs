@@ -321,6 +321,34 @@ fn regex_storage_kv() -> &'static Regex {
     })
 }
 
+fn regex_kag_unquoted_kv() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)\b(?:storage|file|image|rule|cursor|graphic|icon|stamp|base|face|bgm|se|voice)\s*=\s*([^\s"'\[\]%&;,()]{2,80})"#).unwrap()
+    })
+}
+
+fn regex_script_attr() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)\bscript\s*(?:=>|:|=)\s*["']?([A-Za-z0-9_]{2,48})"#).unwrap()
+    })
+}
+
+fn regex_trans_attr() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)["']?trans["']?\s*(?:=>|:|=|,)\s*["']([A-Za-z0-9_]{2,48})["']"#).unwrap()
+    })
+}
+
+fn regex_string_concat() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"["']([^"'\r\n]{1,64})["']\s*\+\s*["']([^"'\r\n]{1,64})["']"#).unwrap()
+    })
+}
+
 fn regex_ini_asset_kv() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -415,7 +443,7 @@ pub struct AutoUnhasher {
     known_char_codes: HashSet<String>,
     voicedrama_stems: HashSet<String>,
     expanded_tjs_tokens: bool,
-    last_combo_signature: (usize, usize, usize, usize, usize),
+    last_combo_signature: (usize, usize, usize, usize, usize, usize),
 }
 
 impl AutoUnhasher {
@@ -440,7 +468,7 @@ impl AutoUnhasher {
             known_char_codes: HashSet::new(),
             voicedrama_stems: HashSet::new(),
             expanded_tjs_tokens: false,
-            last_combo_signature: (0, 0, 0, 0, 0),
+            last_combo_signature: (0, 0, 0, 0, 0, 0),
         };
         s.seed_defaults();
         s
@@ -839,7 +867,7 @@ impl AutoUnhasher {
             if let Ok(psb) = parse_psb(data) {
                 self.extract_from_psb(&psb.root);
                 for s in &psb.strings {
-                    if s.contains('/') && s.len() < 128 && !s.contains(' ') {
+                    if s.len() < 128 && !s.contains(' ') && (s.contains('/') || s.contains('.')) {
                         self.harvest_string_hint(s);
                     }
                     self.record_ident_token(s);
@@ -859,6 +887,7 @@ impl AutoUnhasher {
                         self.add_file_candidate(&format!("{s}.scn"));
                     }
                     self.record_ident_token(s);
+                    self.record_tjs_derived_stems(s);
                     self.expand_printf_template(s);
                     let st = s.trim();
                     if (2..=24).contains(&st.len())
@@ -973,6 +1002,54 @@ impl AutoUnhasher {
         }
     }
 
+    /// Derive filename stems from TJS2 class/helper identifiers:
+    /// - `syssechk_origplay` -> `syssechk`
+    /// - `ZoomMapLayer` / `ZoomMapDrag` -> `zoommap`
+    fn record_tjs_derived_stems(&mut self, raw: &str) {
+        let s = raw.trim();
+        if s.len() < 4
+            || s.len() > 48
+            || s.starts_with('_')
+            || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return;
+        }
+        if let Some((head, _)) = s.split_once('_') {
+            if (3..=24).contains(&head.len()) && head.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                self.tjs_ident_tokens.insert(head.to_ascii_lowercase());
+            }
+        }
+        for suffix in [
+            "Controller",
+            "Manager",
+            "Window",
+            "Plugin",
+            "Dialog",
+            "Button",
+            "Handler",
+            "Screen",
+            "Object",
+            "Helper",
+            "Layer",
+            "Panel",
+            "Utils",
+            "Util",
+            "View",
+            "Mode",
+            "Drag",
+            "Info",
+            "Base",
+        ] {
+            if let Some(stem) = s.strip_suffix(suffix) {
+                if (3..=24).contains(&stem.len())
+                    && stem.bytes().all(|b| b.is_ascii_alphanumeric())
+                {
+                    self.tjs_ident_tokens.insert(stem.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+
     fn scan_decoded_text_round1(&mut self, text: &str) {
         for cap in regex_tjs_file_ref().captures_iter(text) {
             if let Some(m) = cap.get(1) {
@@ -1063,6 +1140,60 @@ impl AutoUnhasher {
                         ".opus", ".ogg", ".ini",
                     ] {
                         self.add_file_candidate(&format!("{val}{ext}"));
+                    }
+                }
+            }
+        }
+
+        // Unquoted KAG tag attributes (`[_cimg file=help_fszoom]`, `@button icon=brows_back`)
+        for cap in regex_kag_unquoted_kv().captures_iter(text) {
+            if let Some(m) = cap.get(1) {
+                let val = m.as_str().trim();
+                if val.is_empty() || val.chars().count() > 80 {
+                    continue;
+                }
+                if val.contains('.') {
+                    self.add_file_candidate(val);
+                    if val.to_ascii_lowercase().ends_with(".ks") {
+                        self.add_file_candidate(&format!("{val}.scn"));
+                    }
+                } else {
+                    for ext in [
+                        ".png", ".jpg", ".tlg", ".pimg", ".asd", ".cur", ".tjs", ".ks", ".ks.scn",
+                        ".opus", ".ogg", ".ini",
+                    ] {
+                        self.add_file_candidate(&format!("{val}{ext}"));
+                    }
+                }
+            }
+        }
+
+        // Layer/effect script references (`script="comuscreen,..."`, `script="mosaic,..."`)
+        for cap in regex_script_attr().captures_iter(text) {
+            if let Some(m) = cap.get(1) {
+                let name = m.as_str().to_ascii_lowercase();
+                self.add_file_candidate(&format!("script_{name}.tjs"));
+                self.add_file_candidate(&format!("{name}.tjs"));
+                self.tjs_ident_tokens.insert(name);
+            }
+        }
+
+        // Transition name references (`"trans", "showslide"`, `trans:"showfade"`)
+        for cap in regex_trans_attr().captures_iter(text) {
+            if let Some(m) = cap.get(1) {
+                let name = m.as_str().to_ascii_lowercase();
+                self.add_file_candidate(&format!("trans_{name}.tjs"));
+                self.tjs_ident_tokens.insert(name);
+            }
+        }
+
+        // Constant TJS string concatenation (`"scenario/" + "first.ks"`)
+        if text.contains('+') {
+            for cap in regex_string_concat().captures_iter(text) {
+                if let (Some(a), Some(b)) = (cap.get(1), cap.get(2)) {
+                    let joined = format!("{}{}", a.as_str(), b.as_str());
+                    if joined.len() <= 160 && !joined.contains(' ') {
+                        self.harvest_string_hint(&joined);
                     }
                 }
             }
@@ -1503,6 +1634,19 @@ impl AutoUnhasher {
                                         self.add_file_candidate(s);
                                     }
                                 }
+                                "script" => {
+                                    let head = s.split(',').next().unwrap_or(s).trim();
+                                    if !head.is_empty() && head.len() <= 48 && !head.contains(' ') {
+                                        self.add_file_candidate(&format!("script_{head}.tjs"));
+                                        self.add_file_candidate(&format!("{head}.tjs"));
+                                    }
+                                }
+                                "trans" | "method" => {
+                                    let t = s.trim();
+                                    if !t.is_empty() && t.len() <= 48 && !t.contains(' ') {
+                                        self.add_file_candidate(&format!("trans_{t}.tjs"));
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -1703,16 +1847,51 @@ impl AutoUnhasher {
     }
 
     fn extract_from_unnamed_pbd(&mut self, val: &PbdValue) {
-        if let Some(dict) = val.as_dict() {
-            // uipsd PBD has `holdimage: [...]`
-            if let Some(arr) = dict.get("holdimage").and_then(|v| v.as_array()) {
-                for item in arr {
-                    if let Some(s) = item.as_str() {
-                        self.add_file_candidate(&format!("{s}.tlg"));
-                        self.add_file_candidate(&format!("{s}.png"));
+        match val {
+            PbdValue::String(s) => {
+                let st = s.trim();
+                if st.is_empty() || st.chars().count() > 160 {
+                    return;
+                }
+                if st.contains('/') || st.contains('\\') || st.contains('.') {
+                    self.harvest_string_hint(st);
+                } else if !st.contains([' ', '\t', '\r', '\n']) {
+                    self.record_ident_token(st);
+                    if st.chars().count() <= 48 {
+                        for ext in [".tlg", ".png", ".jpg", ".pimg", ".tjs", ".ks", ".opus", ".ogg"] {
+                            self.add_file_candidate(&format!("{st}{ext}"));
+                        }
                     }
                 }
             }
+            PbdValue::Array(items) => {
+                for item in items {
+                    self.extract_from_unnamed_pbd(item);
+                }
+            }
+            PbdValue::Dict(dict) => {
+                // uipsd PBD has `holdimage: [...]`
+                if let Some(arr) = dict.get("holdimage").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            self.add_file_candidate(&format!("{s}.tlg"));
+                            self.add_file_candidate(&format!("{s}.png"));
+                        }
+                    }
+                }
+                for (k, v) in dict {
+                    let kt = k.trim();
+                    if !kt.is_empty() && kt.chars().count() <= 120 {
+                        if kt.contains('/') || kt.contains('\\') || kt.contains('.') {
+                            self.harvest_string_hint(kt);
+                        } else {
+                            self.record_ident_token(kt);
+                        }
+                    }
+                    self.extract_from_unnamed_pbd(v);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2736,6 +2915,7 @@ impl AutoUnhasher {
             self.known_char_codes.len(),
             self.voicedrama_stems.len(),
             self.path_map.len(),
+            self.file_map.len(),
         );
         if sig == self.last_combo_signature {
             return;
@@ -2743,11 +2923,33 @@ impl AutoUnhasher {
         self.last_combo_signature = sig;
 
         let prefixes: Vec<String> = self.underscore_prefixes.iter().cloned().collect();
-        let char_names: Vec<String> = self.known_char_names.iter().cloned().collect();
         let char_codes: Vec<String> = self.known_char_codes.iter().cloned().collect();
         let vd_stems: Vec<String> = self.voicedrama_stems.iter().cloned().collect();
 
-        // Collect resolved top/leaf directory stems (e.g. "k2compat") to expand matching `<dir>_<token>.tjs`
+        // Expand CJK full names (e.g. `向島悠斗` -> `向島`, `悠斗`) and common UI fallback labels
+        let mut expanded_char_names: HashSet<String> = self.known_char_names.clone();
+        for ch in &self.known_char_names {
+            let chars: Vec<char> = ch.chars().collect();
+            if (chars.len() == 3 || chars.len() == 4) && chars.iter().all(|c| !c.is_ascii()) {
+                expanded_char_names.insert(chars[..2].iter().collect());
+                expanded_char_names.insert(chars[chars.len() - 2..].iter().collect());
+            }
+        }
+        for fallback in [
+            "共通", "common", "default", "empty", "none", "other", "all", "sys", "system",
+            "unknown", "mob", "npc",
+        ] {
+            expanded_char_names.insert(fallback.to_string());
+        }
+        let char_names: Vec<String> = expanded_char_names.into_iter().collect();
+
+        // Collect resolved directories and leaf stems
+        let resolved_dirs: Vec<String> = self
+            .path_map
+            .values()
+            .filter(|p| !p.is_empty() && p.matches('/').count() <= 2)
+            .cloned()
+            .collect();
         let resolved_dir_stems: HashSet<String> = self
             .path_map
             .values()
@@ -2767,8 +2969,98 @@ impl AutoUnhasher {
             .cloned()
             .collect();
 
+        // Subdirectory induction when unresolved path hashes remain (`scenario/` + `transitions` -> `scenario/transitions/`)
+        if self.path_map.len() < self.target_path_hashes.len() {
+            let short_alpha_dirs: Vec<&String> = short_tjs_words
+                .iter()
+                .filter(|w| (2..=20).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_alphabetic()))
+                .collect();
+            for tok in &short_alpha_dirs {
+                self.add_path_candidate(&format!("{tok}/"));
+            }
+            for dir in &resolved_dirs {
+                let norm_dir = if dir.ends_with('/') {
+                    dir.clone()
+                } else {
+                    format!("{dir}/")
+                };
+                for tok in &short_alpha_dirs {
+                    self.add_path_candidate(&format!("{norm_dir}{tok}/"));
+                }
+            }
+        }
+
+        // Collect short alphabetic UI/script prefixes confirmed by >=2 resolved files
+        // (e.g. `trans_`, `script_`, `brows_`, `help_`, `k2compat_`)
+        let mut resolved_script_prefixes: HashMap<String, usize> = HashMap::new();
+        let mut resolved_ui_prefixes: HashMap<String, usize> = HashMap::new();
+        let mut saw_trans_show = false;
+        let mut saw_script_prefix = false;
+        let mut saw_eff_image = false;
+        let mut resolved_image_stems: HashSet<String> = HashSet::new();
+        for fname in self.file_map.values() {
+            let low = fname.to_ascii_lowercase();
+            if low.starts_with("trans_show") {
+                saw_trans_show = true;
+            }
+            if low.starts_with("script_") {
+                saw_script_prefix = true;
+            }
+            if low.starts_with("eff") && (low.ends_with(".png") || low.ends_with(".tlg")) {
+                saw_eff_image = true;
+            }
+            if let Some((stem, ext)) = low.rsplit_once('.') {
+                if let Some((head, _)) = stem.split_once('_') {
+                    let is_alpha_head =
+                        (3..=10).contains(&head.len()) && head.bytes().all(|b| b.is_ascii_alphabetic());
+                    if matches!(ext, "png" | "tlg" | "jpg") {
+                        if (3..=16).contains(&head.len())
+                            && head.bytes().all(|b| b.is_ascii_alphabetic())
+                        {
+                            resolved_image_stems.insert(head.to_string());
+                        }
+                        if is_alpha_head
+                            && !matches!(
+                                head,
+                                "bgthum" | "logface" | "logname" | "comuicon" | "chaticon" | "thum"
+                            )
+                        {
+                            *resolved_ui_prefixes.entry(format!("{head}_")).or_insert(0) += 1;
+                        }
+                    } else if matches!(ext, "tjs" | "ks" | "ini") && is_alpha_head {
+                        *resolved_script_prefixes
+                            .entry(format!("{head}_"))
+                            .or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let mut active_script_prefixes: HashSet<String> = resolved_script_prefixes
+            .into_iter()
+            .filter(|(_, count)| *count >= 2)
+            .map(|(pref, _)| pref)
+            .collect();
+        let mut active_ui_prefixes: HashSet<String> = resolved_ui_prefixes
+            .into_iter()
+            .filter(|(_, count)| *count >= 2 && *count <= 20)
+            .map(|(pref, _)| pref)
+            .collect();
+        for pref in &prefixes {
+            let stem_no_us = pref.trim_end_matches('_');
+            if resolved_dir_stems.contains(stem_no_us)
+                || matches!(pref.as_str(), "trans_" | "script_")
+            {
+                active_script_prefixes.insert(pref.clone());
+            }
+            if matches!(pref.as_str(), "brows_" | "help_") {
+                active_ui_prefixes.insert(pref.clone());
+            }
+        }
+
         let lang_tags = [
-            "jp", "en", "cn", "tw", "sc", "tc", "kr", "ko", "id", "ja", "zh", "default",
+            "jp", "en", "cn", "tw", "sc", "tc", "kr", "ko", "id", "ja", "zh", "ph", "tl", "fil",
+            "th", "vi", "es", "fr", "de", "ru", "pt", "ms", "default",
         ];
 
         for pref in &prefixes {
@@ -2789,12 +3081,86 @@ impl AutoUnhasher {
                     }
                 }
             }
-            let stem_no_us = pref.trim_end_matches('_');
-            if resolved_dir_stems.contains(stem_no_us) {
-                for w in &short_tjs_words {
-                    self.add_file_candidate(&format!("{pref}{w}.tjs"));
-                    self.add_file_candidate(&format!("{pref}{w}.ks"));
-                    self.add_file_candidate(&format!("{pref}{w}.ini"));
+        }
+
+        for pref in &active_script_prefixes {
+            for w in &short_tjs_words {
+                self.add_file_candidate(&format!("{pref}{w}.tjs"));
+                self.add_file_candidate(&format!("{pref}{w}.ks"));
+                self.add_file_candidate(&format!("{pref}{w}.ini"));
+            }
+        }
+        for pref in &active_ui_prefixes {
+            for w in &short_tjs_words {
+                self.add_file_candidate(&format!("{pref}{w}.png"));
+                self.add_file_candidate(&format!("{pref}{w}.tlg"));
+            }
+        }
+
+        // Transition show-action preset family (`trans_showfade.tjs`, `trans_showslide.tjs`, `trans_showstand.tjs`, `trans_showzoom.tjs`)
+        if saw_trans_show || self.tjs_ident_tokens.contains("showaction") {
+            for action in [
+                "fade", "slide", "stand", "zoom", "move", "jump", "drop", "up", "down", "in",
+                "out", "scale", "turn", "spin", "blur", "wave", "bounce", "pop", "scroll",
+                "crossfade",
+            ] {
+                self.add_file_candidate(&format!("trans_show{action}.tjs"));
+            }
+        }
+
+        // Layer-effect script compound pairs (`script_lightedge.tjs`, `script_zoomblur.tjs`, etc.)
+        if saw_script_prefix {
+            let fx_words = [
+                "light", "dark", "edge", "blur", "zoom", "shadow", "drop", "glow", "fade", "wave",
+                "mosaic", "noise", "color", "alpha", "line", "soft", "hard", "sharp", "outline",
+                "border", "frame",
+            ];
+            for a in fx_words {
+                for b in fx_words {
+                    if a != b {
+                        self.add_file_candidate(&format!("script_{a}{b}.tjs"));
+                    }
+                }
+            }
+        }
+
+        // Directory-scoped numbered assets (`image/comu/` + `stamp` in TJS -> `comu_stamp001..060.png`)
+        let asset_nouns = [
+            "stamp", "icon", "btn", "button", "bg", "frame", "card", "item", "img", "thumb",
+            "thum", "mark", "panel", "banner", "badge", "chara", "face", "pic", "part", "parts",
+            "base", "eff",
+        ];
+        let active_nouns: Vec<&str> = asset_nouns
+            .into_iter()
+            .filter(|n| self.tjs_ident_tokens.contains(*n))
+            .collect();
+        for dir_stem in &resolved_dir_stems {
+            if !(2..=16).contains(&dir_stem.len())
+                || !dir_stem.bytes().all(|b| b.is_ascii_alphanumeric())
+            {
+                continue;
+            }
+            for noun in &active_nouns {
+                for n in 0..=60usize {
+                    self.add_file_candidate(&format!("{dir_stem}_{noun}{n:03}.png"));
+                    self.add_file_candidate(&format!("{dir_stem}_{noun}{n:02}.png"));
+                    self.add_file_candidate(&format!("{dir_stem}_{noun}{n}.png"));
+                    if n <= 5 {
+                        self.add_file_candidate(&format!("{dir_stem}_{noun}{n:03}.tlg"));
+                        self.add_file_candidate(&format!("{dir_stem}_{noun}{n:02}.tlg"));
+                        self.add_file_candidate(&format!("{dir_stem}_{noun}{n:03}.jpg"));
+                    }
+                }
+            }
+        }
+
+        // Effect image prefix cross-expansion (`effchangescreen1.png` + `sakura_l1.png` -> `effsakura01..16.png`)
+        if saw_eff_image {
+            for stem in &resolved_image_stems {
+                for n in 1..=16usize {
+                    self.add_file_candidate(&format!("eff{stem}{n:02}.png"));
+                    self.add_file_candidate(&format!("eff{stem}{n}.png"));
+                    self.add_file_candidate(&format!("eff{stem}{n:02}.tlg"));
                 }
             }
         }
@@ -3350,5 +3716,90 @@ mod tests {
         assert_eq!(res.file_map.get(&tlg_h).map(String::as_str), Some("KotoRI1_1_18.tlg"));
         assert_eq!(res.file_map.get(&func_h).map(String::as_str), Some("quickmenu.func"));
         assert_eq!(res.file_map.get(&pimg_h).map(String::as_str), Some("quickmenu.pimg"));
+    }
+
+    #[test]
+    fn test_kag_unquoted_script_trans_subdir_and_cjk_name_split() {
+        let hasher = Hxv4Hasher::default();
+        let root_h = hasher.path_hash_hex("");
+        let scen_h = hasher.path_hash_hex("scenario/");
+        let trans_dir_h = hasher.path_hash_hex("scenario/transitions/");
+        let comu_dir_h = hasher.path_hash_hex("image/comu/");
+
+        let help_ks_h = hasher.file_hash_hex("brows_help.ks");
+        let help_fszoom_h = hasher.file_hash_hex("help_fszoom.png");
+        let script_mosaic_h = hasher.file_hash_hex("script_mosaic.tjs");
+        let trans_showslide_h = hasher.file_hash_hex("trans_showslide.tjs");
+        let trans_showstand_h = hasher.file_hash_hex("trans_showstand.tjs");
+        let comu_stamp_h = hasher.file_hash_hex("comu_stamp003.png");
+        let logname_yuto_h = hasher.file_hash_hex("logname_悠斗.png");
+
+        let help_ks = b"[_cimg file=help_fszoom]\r\n[layer script=\"mosaic,8\"]\r\n";
+        let env_tjs_str = "\"transitions\" => %[ \"init\" => [\"trans\", \"showslide\"] ];\nvar a = \"image/comu/\";\nvar b = \"fgimage/向島悠斗\";\nvar c = \"scenario/\";\n";
+
+        let target_paths = HashSet::from([
+            root_h.clone(),
+            scen_h.clone(),
+            trans_dir_h.clone(),
+            comu_dir_h.clone(),
+        ]);
+        let target_files = HashSet::from([
+            help_ks_h.clone(),
+            help_fszoom_h.clone(),
+            script_mosaic_h.clone(),
+            trans_showslide_h.clone(),
+            trans_showstand_h.clone(),
+            comu_stamp_h.clone(),
+            logname_yuto_h.clone(),
+        ]);
+
+        let mut unhasher = AutoUnhasher::new(hasher, target_paths, target_files);
+        unhasher.record_ident_token("transitions");
+        unhasher.record_ident_token("stamp");
+        unhasher.record_ident_token("logname_");
+        let targets = [
+            UnhashTarget {
+                id: 0,
+                domain_hash: root_h.clone(),
+                file_hash: help_ks_h,
+                data: help_ks,
+            },
+            UnhashTarget {
+                id: 1,
+                domain_hash: root_h,
+                file_hash: trans_showslide_h.clone(),
+                data: env_tjs_str.as_bytes(),
+            },
+        ];
+
+        let res = unhasher.run_auto_analysis(&targets);
+        assert_eq!(
+            res.path_map.get(&trans_dir_h).map(String::as_str),
+            Some("scenario/transitions/")
+        );
+        assert_eq!(
+            res.file_map.get(&help_fszoom_h).map(String::as_str),
+            Some("help_fszoom.png")
+        );
+        assert_eq!(
+            res.file_map.get(&script_mosaic_h).map(String::as_str),
+            Some("script_mosaic.tjs")
+        );
+        assert_eq!(
+            res.file_map.get(&trans_showslide_h).map(String::as_str),
+            Some("trans_showslide.tjs")
+        );
+        assert_eq!(
+            res.file_map.get(&trans_showstand_h).map(String::as_str),
+            Some("trans_showstand.tjs")
+        );
+        assert_eq!(
+            res.file_map.get(&comu_stamp_h).map(String::as_str),
+            Some("comu_stamp003.png")
+        );
+        assert_eq!(
+            res.file_map.get(&logname_yuto_h).map(String::as_str),
+            Some("logname_悠斗.png")
+        );
     }
 }
