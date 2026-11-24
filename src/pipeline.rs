@@ -3,7 +3,8 @@ use crate::bootstrap::{
 };
 use crate::classify::classify_bytes;
 use crate::cli::{
-    AnalyzeArgs, ExtractArgs, HashArgs, KeysArgs, RecoveryOverrides, RunArgs, UnhashArgs,
+    AnalyzeArgs, ExtractArgs, HashArgs, KeysArgs, RecoveryOverrides, RepackArgs, RunArgs,
+    UnhashArgs,
 };
 use crate::derive::{DerivedFilterState, derive_from_bootstrap_dll};
 use crate::descramble::{descramble_bytes, detect_scramble_mode};
@@ -13,6 +14,7 @@ use crate::hash::{Hxv4Hasher, is_file_hash_hex, is_path_hash_hex};
 use crate::hxv4::{Hxv4Record, parse_hxv4_table};
 use crate::pe::{parse_resource_ref, parse_u32_radix, parse_u64_radix};
 use crate::psb::parse_psb;
+use crate::repack::{RepackOptions, repack_directory_to_hxv4_xp3, verify_repacked_xp3};
 use crate::salt::SaltOverride;
 use crate::unhash::{AutoUnhasher, save_hxnames_lst};
 use crate::xp3::Xp3Archive;
@@ -85,9 +87,13 @@ fn resolve_keys_for_target(
     hint_path: &Path,
     ov: &RecoveryOverrides,
     temp_keys_dir: Option<&Path>,
+    total_steps: usize,
 ) -> Result<ResolvedKeyBundle> {
     if let Some(ref drip_path) = ov.drip_program {
-        println!("[1/4] Using existing drip program: {}", drip_path.display());
+        println!(
+            "[1/{total_steps}] Using existing drip program: {}",
+            drip_path.display()
+        );
         let program = DripProgram::load(drip_path)?;
         return Ok(ResolvedKeyBundle {
             program,
@@ -116,10 +122,12 @@ fn resolve_keys_for_target(
         )?
     };
 
-    println!("[1/4] Found game EXE: {}", exe_cand.path.display());
+    println!("[1/{total_steps}] Found game EXE: {}", exe_cand.path.display());
 
     // Step 2: Recover static bres/BOOTSTRAP/FilterManager keys
-    println!("[2/4] Extracting keys statically from EXE (bres salt -> STARTUP.TJS -> BOOTSTRAP DLL -> FilterManager)...");
+    println!(
+        "[2/{total_steps}] Extracting keys statically from EXE (bres salt -> STARTUP.TJS -> BOOTSTRAP DLL -> FilterManager)..."
+    );
     let artifacts = recover_static_from_exe(&exe_cand.path, &opts)?;
 
     println!("      salt_source       : {}", artifacts.salt_source);
@@ -284,10 +292,10 @@ pub fn cmd_analyze(args: AnalyzeArgs) -> Result<()> {
         .exe
         .as_deref()
         .unwrap_or_else(|| args.targets[0].as_path());
-    let bundle = resolve_keys_for_target(hint, &args.recovery, None)?;
+    let bundle = resolve_keys_for_target(hint, &args.recovery, None, 3)?;
 
     println!(
-        "[3/4] Analyzing {} XP3 archive(s)...",
+        "[3/3] Analyzing {} XP3 archive(s)...",
         archives.len()
     );
 
@@ -613,7 +621,7 @@ fn run_extract_pipeline(
         .or(exe_hint_override)
         .unwrap_or_else(|| args.targets[0].as_path());
 
-    let bundle = resolve_keys_for_target(hint, &args.recovery, keys_dir.as_deref())?;
+    let bundle = resolve_keys_for_target(hint, &args.recovery, keys_dir.as_deref(), 4)?;
 
     if let Some(ref kd) = keys_dir {
         if let Some(ref art) = bundle.artifacts {
@@ -1161,6 +1169,63 @@ pub fn cmd_unhash(args: UnhashArgs) -> Result<()> {
     println!(
         "Unhash complete ({} rounds, {} candidates): renamed {} files and {} directories.",
         res.rounds, res.total_candidates_tested, renamed_files, renamed_dirs
+    );
+    Ok(())
+}
+
+pub fn cmd_repack(args: RepackArgs) -> Result<()> {
+    let total_steps = if args.verify { 4 } else { 3 };
+    let hint = args.recovery.exe.as_deref().unwrap_or(&args.target);
+    let bundle = resolve_keys_for_target(hint, &args.recovery, None, total_steps)?;
+
+    let open_flag = args.recovery.force_open_flag.unwrap_or(args.open_flag);
+    println!(
+        "[3/{total_steps}] Repacking {} -> {} (Cxdec Hxv4, open_flag={open_flag})...",
+        args.input_dir.display(),
+        args.output.display()
+    );
+
+    let opts = RepackOptions {
+        compress: args.compress,
+        compression_level: args.compression_level,
+        raw_index: args.raw_index,
+        open_flag,
+        preserve_case: args.preserve_case,
+        raw_hashes: args.raw_hashes,
+        keyed_hash: args.keyed_hash,
+        show_progress: true,
+    };
+
+    let summary =
+        repack_directory_to_hxv4_xp3(&args.input_dir, &args.output, &bundle.program, &opts)?;
+
+    if args.verify {
+        println!(
+            "[4/{total_steps}] Verifying {} entries (Hxv4 auth + Cxdec decrypt + Adler32)...",
+            summary.file_count
+        );
+        let verified =
+            verify_repacked_xp3(&summary.output_path, &bundle.program, &summary.expected_hashes)?;
+        println!("      verified          : {verified}/{} entries OK", summary.file_count);
+    }
+
+    println!("\n=== Repack Summary ===");
+    println!("  Output XP3        : {}", summary.output_path.display());
+    println!(
+        "  Files             : {} ({} domain(s), {} compressed)",
+        summary.file_count, summary.domain_count, summary.compressed_count
+    );
+    println!(
+        "  Payload bytes     : {} -> {} archived",
+        summary.total_original_bytes, summary.total_archived_bytes
+    );
+    println!(
+        "  Hxv4 table        : offset=0x{:x} size={} bytes (flags=0x{:x})",
+        summary.hxv4_offset, summary.hxv4_size, open_flag
+    );
+    println!(
+        "  XP3 index         : offset=0x{:x} | total archive={} bytes",
+        summary.index_offset, summary.archive_size
     );
     Ok(())
 }

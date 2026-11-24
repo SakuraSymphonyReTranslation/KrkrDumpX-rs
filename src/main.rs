@@ -14,6 +14,7 @@ mod pbd;
 mod pe;
 mod pipeline;
 mod psb;
+mod repack;
 mod salt;
 mod tjs2;
 mod unhash;
@@ -29,6 +30,7 @@ fn main() {
         Command::Keys(args) => pipeline::cmd_keys(args),
         Command::Analyze(args) => pipeline::cmd_analyze(args),
         Command::Extract(args) => pipeline::cmd_extract(args),
+        Command::Repack(args) => pipeline::cmd_repack(args),
         Command::Unhash(args) => pipeline::cmd_unhash(args),
         Command::Hash(args) => pipeline::cmd_hash(args),
     };

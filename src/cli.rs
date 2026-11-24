@@ -1,16 +1,16 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "krkrdumpx-rs",
     version,
-    about = "Static Kirikiri XP3 / Cxdec Hxv4 key extractor, analyzer, auto-unhasher, and extractor",
-    long_about = "Extracts Kirikiri XP3 archives encrypted with Cxdec Hxv4 statically:\n\
+    about = "Static Kirikiri XP3 / Cxdec Hxv4 key extractor, analyzer, auto-unhasher, extractor, and repacker",
+    long_about = "Extracts and repacks Kirikiri XP3 archives encrypted with Cxdec Hxv4 statically:\n\
                   1) Locate the game .exe\n\
                   2) Recover keys from the .exe (bres salt, STARTUP.TJS, BOOTSTRAP DLL, FilterManager)\n\
                   3) Parse XP3/Hxv4 tables, verify Adler32, classify headers, and auto-unhash names\n\
-                  4) Write decrypted files with recovered paths and extensions."
+                  4) Extract decrypted files or repack a patch directory into an encrypted Hxv4 XP3 archive."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -30,6 +30,9 @@ pub enum Command {
 
     /// Extract XP3 archive(s) with static key recovery and automatic unhashing
     Extract(ExtractArgs),
+
+    /// Pack a directory into an encrypted Cxdec Hxv4 XP3 archive using keys from .exe
+    Repack(RepackArgs),
 
     /// Auto-unhash and rename files inside an already-extracted Hxv4 directory
     Unhash(UnhashArgs),
@@ -248,6 +251,66 @@ pub struct ExtractArgs {
     /// Use keyed SipHash/BLAKE2s hashing with derived hash_key
     #[arg(long)]
     pub keyed_hash: bool,
+
+    #[command(flatten)]
+    pub recovery: RecoveryOverrides,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionMode {
+    /// Compress entries with zlib when smaller, skipping already-compressed formats
+    Auto,
+    /// Always zlib-compress entries
+    Always,
+    /// Store all entries uncompressed
+    Never,
+}
+
+#[derive(Args, Debug)]
+pub struct RepackArgs {
+    /// Game .exe (or directory containing it) used to recover Hxv4/Cxdec keys
+    #[arg(value_name = "GAME_EXE")]
+    pub target: PathBuf,
+
+    /// Input directory containing files to pack into the XP3 archive
+    #[arg(value_name = "INPUT_DIR")]
+    pub input_dir: PathBuf,
+
+    /// Output .xp3 archive path
+    #[arg(short = 'o', long)]
+    pub output: PathBuf,
+
+    /// Segment compression mode (default: auto)
+    #[arg(long, value_enum, default_value_t = CompressionMode::Auto)]
+    pub compress: CompressionMode,
+
+    /// Zlib compression level 1..=9 (default: 6)
+    #[arg(long, default_value_t = 6)]
+    pub compression_level: u32,
+
+    /// Store XP3 index uncompressed instead of zlib-compressed
+    #[arg(long)]
+    pub raw_index: bool,
+
+    /// Hxv4 descriptor flags (bit 0 selects open_flag and nonce0/nonce1; default: 0)
+    #[arg(long, default_value_t = 0)]
+    pub open_flag: u16,
+
+    /// Keep original ASCII case when hashing directory and file names (default: ASCII lowercase)
+    #[arg(long)]
+    pub preserve_case: bool,
+
+    /// Treat 16-hex directory names and 64-hex file stems as precomputed Hxv4 hashes
+    #[arg(long)]
+    pub raw_hashes: bool,
+
+    /// Use keyed SipHash/BLAKE2s hashing with derived hash_key
+    #[arg(long)]
+    pub keyed_hash: bool,
+
+    /// Verify the written archive after packing (decrypt Hxv4 table and check Adler32 for all entries)
+    #[arg(long)]
+    pub verify: bool,
 
     #[command(flatten)]
     pub recovery: RecoveryOverrides,

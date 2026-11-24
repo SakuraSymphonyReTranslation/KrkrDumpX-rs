@@ -1,8 +1,8 @@
 # KrkrDumpX-rs
 
-Static Kirikiri XP3 / Cxdec Hxv4 key extractor, archive analyzer, auto-unhasher, and extractor written in Rust.
+Static Kirikiri XP3 / Cxdec Hxv4 key extractor, archive analyzer, auto-unhasher, extractor, and repacker written in Rust.
 
-It reads keys directly from the game `.exe`, decrypts XP3/Hxv4 archives, and recovers hashed filenames from internal game data without launching the game or requiring an external `HxNames.lst`.
+It reads keys directly from the game `.exe`, decrypts or repacks XP3/Hxv4 archives, and recovers hashed filenames from internal game data without launching the game or requiring an external `HxNames.lst`.
 
 ## How it works
 
@@ -62,6 +62,27 @@ krkrdumpx-rs extract "D:\Games\TargetGame\data.xp3" "D:\Games\TargetGame\scn.xp3
 krkrdumpx-rs extract "D:\Games\TargetGame" -o out --export-lst HxNames.lst
 krkrdumpx-rs extract "D:\Games\TargetGame\scn.xp3" -o out --no-unhash
 ```
+
+### Repack into an Hxv4 XP3 archive (`repack`)
+
+Packs a patch directory into an encrypted Cxdec Hxv4 `.xp3` archive using keys derived statically from the game `.exe`:
+
+```powershell
+krkrdumpx-rs repack "D:\Games\TargetGame\Game.exe" "D:\Games\TargetGame\folderpatch" -o "D:\Games\TargetGame\patch.xp3"
+
+# With post-write decryption/Adler32 verification and explicit compression mode
+krkrdumpx-rs repack "D:\Games\TargetGame\Game.exe" "D:\Games\TargetGame\folderpatch" -o patch.xp3 --verify --compress auto
+```
+
+Useful `repack` flags:
+
+- `--compress <auto|always|never>`: segment zlib compression mode (default `auto`, skips already-compressed media)
+- `--compression-level <1..9>`: zlib level (default `6`)
+- `--raw-index`: store XP3 index uncompressed
+- `--open-flag <0|1>`: Hxv4 descriptor flags (default `0`)
+- `--preserve-case`: keep original ASCII casing instead of lowercasing paths before hashing
+- `--raw-hashes`: treat 16-hex directory names and 64-hex file stems as precomputed Hxv4 hashes
+- `--verify`: reopen the written `.xp3`, authenticate its Hxv4 table, and verify Adler32 on every decrypted entry
 
 ### Unhash an already-extracted directory (`unhash`)
 

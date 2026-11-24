@@ -419,6 +419,44 @@ fn parse_index(index: &[u8]) -> Result<(Vec<Xp3Entry>, Option<Hxv4Descriptor>)> 
     Ok((entries, hxv4_descriptor))
 }
 
+/// Encode an Hxv4 numeric entry ID into the synthetic Unicode name stored in XP3 `info`
+/// (base-16384 digits offset by U+5000).
+pub fn hxv4_fake_name(mut id: u64) -> String {
+    let mut units = Vec::new();
+    loop {
+        units.push(0x5000u16 + (id as u16 & 0x3FFF));
+        id >>= 14;
+        if id == 0 {
+            break;
+        }
+    }
+    String::from_utf16_lossy(&units)
+}
+
+/// Decode a synthetic Hxv4 Unicode `info` name back to its numeric entry ID.
+pub fn hxv4_fake_id(name: &str) -> Option<u64> {
+    let units: Vec<u16> = name.encode_utf16().collect();
+    if units.is_empty() || units.len() > 5 {
+        return None;
+    }
+    if units.len() > 1 && *units.last().unwrap() == 0x5000 {
+        return None;
+    }
+    let mut id = 0u64;
+    for (i, unit) in units.iter().copied().enumerate() {
+        if !(0x5000..=0x8FFF).contains(&unit) {
+            return None;
+        }
+        let digit = (unit - 0x5000) as u64;
+        let shift = i * 14;
+        if shift > 50 && digit >= (1u64 << (64 - shift)) {
+            return None;
+        }
+        id |= digit << shift;
+    }
+    Some(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,5 +465,18 @@ mod tests {
     fn test_adler32_known_vectors() {
         assert_eq!(calc_adler32(b""), 1);
         assert_eq!(calc_adler32(b"Wikipedia"), 0x11E6_0398);
+    }
+
+    #[test]
+    fn test_hxv4_fake_name_roundtrip() {
+        assert_eq!(hxv4_fake_name(0), "倀");
+        assert_eq!(hxv4_fake_name(1), "倁");
+        assert_eq!(hxv4_fake_name(2), "倂");
+        for id in [0u64, 1, 2, 34, 0x3FFF, 0x4000, 0x1_0000, 0x1234_5678, u32::MAX as u64] {
+            let encoded = hxv4_fake_name(id);
+            assert_eq!(hxv4_fake_id(&encoded), Some(id));
+        }
+        assert_eq!(hxv4_fake_id("startup.tjs"), None);
+        assert_eq!(hxv4_fake_id("倁倀"), None);
     }
 }
